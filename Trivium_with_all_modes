@@ -1,0 +1,291 @@
+#include <iostream>      // For console input/output
+#include <bitset>        // For binary (bit-level) operations using fixed-size arrays
+#include <vector>        // For dynamic arrays (to hold binary data)
+#include <string>        // For using string objects
+#include <sstream>       // For converting bits to strings
+#include <cstdint>       // For fixed-size integer types (e.g., uint64_t)
+
+// Use the standard namespace to avoid writing std::
+using namespace std;
+
+// ========== TRIVIUM CLASS ========== //
+class Trivium {
+private:
+    bitset<93> A;    // First shift register with 93 bits
+    bitset<84> B;    // Second shift register with 84 bits
+    bitset<111> C;   // Third shift register with 111 bits
+
+public:
+    // Initialize the Trivium registers with IV and key
+    void initialize(bitset<80> iv, bitset<80> key) {
+        for (int i = 0; i < 80; i++) A[i] = iv[i];   // Load IV into register A
+        for (int i = 0; i < 80; i++) B[i] = key[i];  // Load key into register B
+        C.reset();                                   // Clear all bits of C
+        C[108] = 1; C[109] = 1; C[110] = 1;          // Set last 3 bits of C to 1 as per Trivium spec
+    }
+
+    // Warm-up phase: Trivium runs 1152 times without generating output
+    void warmup() {
+        for (int i = 0; i < 1152; i++) step(false);  // Run step function with no output
+    }
+
+    // One round (clock cycle) of the Trivium algorithm
+    bool step(bool outputEnable = true) {
+        // Temporary variables used in computing new bits
+        bool t1 = A[65] ^ A[92];        // XOR taps of register A
+        bool t2 = B[68] ^ B[83];        // XOR taps of register B
+        bool t3 = C[65] ^ C[110];       // XOR taps of register C
+
+        bool z = t1 ^ t2 ^ t3;          // Output bit is XOR of all three taps
+
+        // Non-linear feedback logic for each register
+        t1 ^= (A[90] & A[91]) ^ B[77];  // Feedback function for A
+        t2 ^= (B[81] & B[82]) ^ C[86];  // Feedback function for B
+        t3 ^= (C[108] & C[109]) ^ A[68];// Feedback function for C
+
+        // Shift each register left by one bit
+        A <<= 1;
+        B <<= 1;
+        C <<= 1;
+
+        // Set bit 0 of each register to the computed feedback value
+        A[0] = t3;
+        B[0] = t1;
+        C[0] = t2;
+
+        // Return the output bit (z) only if output is enabled
+        return outputEnable ? z : 0;
+    }
+
+    // Generate n bits of keystream by running step() n times
+    vector<bool> generateKeystream(int n) {
+        vector<bool> ks;                   // Vector to hold keystream
+        for (int i = 0; i < n; i++)
+            ks.push_back(step(true));     // Generate each bit and append
+        return ks;
+    }
+};
+
+// ========== UTILITY FUNCTIONS ========== //
+
+// Convert a string to a vector of bits (8 bits per character)
+vector<bool> stringToBits(const string& s) {
+    vector<bool> bits;
+    for (char c : s)                  // For each character
+        for (int i = 7; i >= 0; i--)  // Extract 8 bits (MSB first)
+            bits.push_back((c >> i) & 1);
+    return bits;
+}
+
+// Convert a vector of bits back to a string
+string bitsToString(const vector<bool>& bits) {
+    stringstream ss;
+    for (size_t i = 0; i < bits.size(); i += 8) {
+        char c = 0;
+        for (int j = 0; j < 8 && i + j < bits.size(); j++) {
+            c <<= 1;
+            c |= bits[i + j];
+        }
+        ss << c;  // Append character to stream
+    }
+    return ss.str();
+}
+
+// XOR two binary vectors bit by bit
+vector<bool> xorVectors(const vector<bool>& a, const vector<bool>& b) {
+    vector<bool> result;
+    for (size_t i = 0; i < a.size(); i++)
+        result.push_back(a[i] ^ b[i]);
+    return result;
+}
+
+// Extract a sub-block of given size from a bit vector
+vector<bool> getBlock(const vector<bool>& data, size_t start, size_t blockSize) {
+    return vector<bool>(data.begin() + start, min(data.begin() + start + blockSize, data.end()));
+}
+
+// ========== ECB MODE ========== //
+
+// Encrypt using ECB mode
+vector<bool> ecbEncrypt(const vector<bool>& plaintext, Trivium triv, int blockSize) {
+    vector<bool> ciphertext;
+    for (size_t i = 0; i < plaintext.size(); i += blockSize) {
+        vector<bool> block = getBlock(plaintext, i, blockSize);      // Get plaintext block
+        vector<bool> keystream = triv.generateKeystream(block.size()); // Generate matching keystream
+        vector<bool> cipherBlock = xorVectors(block, keystream);     // XOR plaintext with keystream
+
+        // Show intermediate values
+        cout << "\n[ECB Encrypt Block " << i / blockSize << "]";
+        cout << "\nPlaintext  : "; for (bool b : block) cout << b;
+        cout << "\nKeystream  : "; for (bool b : keystream) cout << b;
+        cout << "\nCiphertext : "; for (bool b : cipherBlock) cout << b << endl;
+
+        ciphertext.insert(ciphertext.end(), cipherBlock.begin(), cipherBlock.end());
+    }
+    return ciphertext;
+}
+
+// Decrypt using ECB (same as encrypt since XOR is symmetric)
+vector<bool> ecbDecrypt(const vector<bool>& ciphertext, Trivium triv, int blockSize) {
+    vector<bool> plaintext;
+    for (size_t i = 0; i < ciphertext.size(); i += blockSize) {
+        vector<bool> block = getBlock(ciphertext, i, blockSize);       // Get ciphertext block
+        vector<bool> keystream = triv.generateKeystream(block.size()); // Generate keystream
+        vector<bool> plainBlock = xorVectors(block, keystream);        // XOR with keystream
+
+        // Show intermediate values
+        cout << "\n[ECB Decrypt Block " << i / blockSize << "]";
+        cout << "\nCiphertext : "; for (bool b : block) cout << b;
+        cout << "\nKeystream  : "; for (bool b : keystream) cout << b;
+        cout << "\nPlaintext  : "; for (bool b : plainBlock) cout << b << endl;
+
+        plaintext.insert(plaintext.end(), plainBlock.begin(), plainBlock.end());
+    }
+    return plaintext;
+}
+
+// ========== CBC MODE ========== //
+
+vector<bool> cbcEncrypt(const vector<bool>& plaintext, Trivium triv, int blockSize, vector<bool> ivBlock) {
+    vector<bool> ciphertext, prevBlock = ivBlock;
+    for (size_t i = 0; i < plaintext.size(); i += blockSize) {
+        auto block = getBlock(plaintext, i, blockSize);      // Get block
+        auto input = xorVectors(block, prevBlock);           // XOR with previous ciphertext (or IV)
+        auto keystream = triv.generateKeystream(block.size());// Generate keystream
+        auto cipher = xorVectors(input, keystream);          // Encrypt
+
+        // Show intermediate values
+        cout << "\n[CBC Encrypt Block " << i / blockSize << "]";
+        cout << "\nPlaintext  : "; for (bool b : block) cout << b;
+        cout << "\nIV/Prev    : "; for (bool b : prevBlock) cout << b;
+        cout << "\nXOR Input  : "; for (bool b : input) cout << b;
+        cout << "\nKeystream  : "; for (bool b : keystream) cout << b;
+        cout << "\nCiphertext : "; for (bool b : cipher) cout << b << endl;
+
+        ciphertext.insert(ciphertext.end(), cipher.begin(), cipher.end());
+        prevBlock = cipher;  // Update previous block
+    }
+    return ciphertext;
+}
+
+vector<bool> cbcDecrypt(const vector<bool>& ciphertext, Trivium triv, int blockSize, vector<bool> ivBlock) {
+    vector<bool> plaintext, prevBlock = ivBlock;
+    for (size_t i = 0; i < ciphertext.size(); i += blockSize) {
+        auto cipher = getBlock(ciphertext, i, blockSize);    // Current ciphertext block
+        auto keystream = triv.generateKeystream(cipher.size());
+        auto decrypted = xorVectors(cipher, keystream);      // Decrypt
+        auto plain = xorVectors(decrypted, prevBlock);       // XOR with previous ciphertext
+
+        // Show intermediate values
+        cout << "\n[CBC Decrypt Block " << i / blockSize << "]";
+        cout << "\nCiphertext : "; for (bool b : cipher) cout << b;
+        cout << "\nKeystream  : "; for (bool b : keystream) cout << b;
+        cout << "\nXORed Out  : "; for (bool b : decrypted) cout << b;
+        cout << "\nPlaintext  : "; for (bool b : plain) cout << b << endl;
+
+        plaintext.insert(plaintext.end(), plain.begin(), plain.end());
+        prevBlock = cipher;  // Update previous block
+    }
+    return plaintext;
+}
+
+// ========== OFB MODE ========== //
+
+vector<bool> ofbEncrypt(const vector<bool>& plaintext, Trivium triv, int blockSize, vector<bool> ivBlock) {
+    vector<bool> ciphertext;
+    for (size_t i = 0; i < plaintext.size(); i += blockSize) {
+        auto keystream = triv.generateKeystream(blockSize);
+        auto block = getBlock(plaintext, i, blockSize);
+        auto cipher = xorVectors(block, keystream);
+
+        cout << "\n[OFB Encrypt Block " << i / blockSize << "]";
+        cout << "\nPlaintext  : "; for (bool b : block) cout << b;
+        cout << "\nKeystream  : "; for (bool b : keystream) cout << b;
+        cout << "\nCiphertext : "; for (bool b : cipher) cout << b << endl;
+
+        ciphertext.insert(ciphertext.end(), cipher.begin(), cipher.end());
+    }
+    return ciphertext;
+}
+
+vector<bool> ofbDecrypt(const vector<bool>& ciphertext, Trivium triv, int blockSize, vector<bool> ivBlock) {
+    // Same as encryption in OFB
+    return ofbEncrypt(ciphertext, triv, blockSize, ivBlock);
+}
+
+// ========== CTR MODE ========== //
+
+vector<bool> ctrEncrypt(const vector<bool>& plaintext, bitset<80> key, int blockSize, uint64_t nonce) {
+    vector<bool> ciphertext;
+    for (size_t i = 0; i < plaintext.size(); i += blockSize) {
+        bitset<80> counter(nonce++);          // Incrementing counter value
+        Trivium t;
+        t.initialize(counter, key);           // Use counter as IV
+        t.warmup();                           // Warm-up phase
+        auto keystream = t.generateKeystream(blockSize);
+        auto block = getBlock(plaintext, i, blockSize);
+        auto cipher = xorVectors(block, keystream);
+
+        cout << "\n[CTR Encrypt Block " << i / blockSize << "]";
+        cout << "\nPlaintext  : "; for (bool b : block) cout << b;
+        cout << "\nCounter IV : " << counter;
+        cout << "\nKeystream  : "; for (bool b : keystream) cout << b;
+        cout << "\nCiphertext : "; for (bool b : cipher) cout << b << endl;
+
+        ciphertext.insert(ciphertext.end(), cipher.begin(), cipher.end());
+    }
+    return ciphertext;
+}
+
+vector<bool> ctrDecrypt(const vector<bool>& ciphertext, bitset<80> key, int blockSize, uint64_t nonce) {
+    // Same as encryption in CTR
+    return ctrEncrypt(ciphertext, key, blockSize, nonce);
+}
+
+// ========== MAIN FUNCTION ========== //
+int main() {
+    // Define message to encrypt
+    string message = "I am Aman Saini";
+
+    // Convert message to binary (bit vector)
+    vector<bool> plaintext = stringToBits(message);
+
+    // Define 80-bit key and IV
+    bitset<80> key(string("10101010101010101010101010101010101010101010101010101010101010101010"));
+    bitset<80> iv(string("01010101010101010101010101010101010101010101010101010101010101010101"));
+
+    // IV block for CBC/OFB (bit vector of 1s)
+    vector<bool> ivBlock(64, 1);
+    int blockSize = 64;  // Block size for encryption
+
+    // Print original message
+    cout << "\nOriginal Message:\n" << message << "\n";
+
+    // ECB Mode Encryption + Decryption
+    Trivium t1; t1.initialize(iv, key); t1.warmup();
+    auto ecb = ecbEncrypt(plaintext, t1, blockSize);
+    Trivium t2; t2.initialize(iv, key); t2.warmup();
+    auto dec_ecb = ecbDecrypt(ecb, t2, blockSize);
+    cout << "\n[ECB Decrypted] " << bitsToString(dec_ecb) << "\n";
+
+    // CBC Mode
+    Trivium t3; t3.initialize(iv, key); t3.warmup();
+    auto cbc = cbcEncrypt(plaintext, t3, blockSize, ivBlock);
+    Trivium t4; t4.initialize(iv, key); t4.warmup();
+    auto dec_cbc = cbcDecrypt(cbc, t4, blockSize, ivBlock);
+    cout << "\n[CBC Decrypted] " << bitsToString(dec_cbc) << "\n";
+
+    // OFB Mode
+    Trivium t5; t5.initialize(iv, key); t5.warmup();
+    auto ofb = ofbEncrypt(plaintext, t5, blockSize, ivBlock);
+    Trivium t6; t6.initialize(iv, key); t6.warmup();
+    auto dec_ofb = ofbDecrypt(ofb, t6, blockSize, ivBlock);
+    cout << "\n[OFB Decrypted] " << bitsToString(dec_ofb) << "\n";
+
+    // CTR Mode
+    auto ctr = ctrEncrypt(plaintext, key, blockSize, 1);
+    auto dec_ctr = ctrDecrypt(ctr, key, blockSize, 1);
+    cout << "\n[CTR Decrypted] " << bitsToString(dec_ctr) << "\n";
+
+    return 0;
+}
