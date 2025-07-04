@@ -1,0 +1,263 @@
+#include <iostream>
+#include <vector>
+#include <bitset>
+#include <algorithm> // For std::reverse
+
+using namespace std; // Added this line
+
+// Define the state size for Trivium (288 bits)
+const int TRIVIUM_STATE_SIZE = 288;
+const int KEY_SIZE = 80;
+const int IV_SIZE = 80;
+
+// Function to initialize the Trivium state
+// Key (80 bits), IV (80 bits)
+// The state is 288 bits, arranged as three registers A, B, C
+// A: 93 bits, B: 84 bits, C: 111 bits
+// Initial state setup:
+// A[0..79] = Key
+// A[80..92] = 0
+// B[0..79] = IV
+// B[80..83] = 0
+// C[0..109] = 0
+// C[110] = 1, C[111] = 1 (or C[108]=1, C[109]=1 if 0-indexed and 110/111 are highest)
+// In this implementation, we'll use 0-indexed bits.
+// So, C[108] = 1, C[109] = 1.
+void initialize_trivium_state(std::bitset<TRIVIUM_STATE_SIZE>& state,
+                               const std::bitset<KEY_SIZE>& key,
+                               const std::bitset<IV_SIZE>& iv) {
+    // Clear the entire state
+    state.reset();
+
+    // Set A register (bits 0-92)
+    // A[0..79] = Key
+    for (int i = 0; i < KEY_SIZE; ++i) {
+        state[i] = key[i];
+    }
+    // A[80..92] are already 0 from state.reset()
+
+    // Set B register (bits 93-176)
+    // B[0..79] = IV (mapped to state bits 93 to 93+79=172)
+    for (int i = 0; i < IV_SIZE; ++i) {
+        state[93 + i] = iv[i];
+    }
+    // B[80..83] (mapped to state bits 173 to 176) are already 0
+
+    // Set C register (bits 177-287)
+    // C[0..109] are already 0
+    // C[110] = 1, C[111] = 1 (mapped to state bits 177+110=287 and 177+111=288, but state size is 288, so 286, 287)
+    // The Trivium specification states C[108]=1 and C[109]=1 for 0-indexed 111-bit register.
+    // So, state[177 + 108] = 1 and state[177 + 109] = 1.
+    state[177 + 108] = 1; // Corresponds to C[108]
+    state[177 + 109] = 1; // Corresponds to C[109]
+
+    // Perform 4 * 288 = 1152 initialization rounds
+    // During these rounds, output bits are discarded.
+    for (int i = 0; i < 4 * TRIVIUM_STATE_SIZE; ++i) {
+        // Calculate the next bits for A, B, C
+        bool t1 = state[65] ^ state[92]; // A: x_66 ^ x_93
+        bool t2 = state[156] ^ state[176]; // B: x_157 ^ x_177
+        bool t3 = state[249] ^ state[287]; // C: x_250 ^ x_288
+
+        // Calculate the output bit (discarded during initialization)
+        // This is not strictly needed for initialization, but good to show the full step
+        // bool z = t1 ^ t2 ^ t3;
+
+        // Update the state
+        // A: x_93 = x_69 ^ x_76 & x_77 ^ x_93
+        // B: x_177 = x_162 ^ x_169 & x_170 ^ x_177
+        // C: x_288 = x_255 ^ x_266 & x_267 ^ x_288
+
+        // Shift and update A (bits 0-92)
+        bool new_a0 = state[68] ^ (state[75] & state[76]) ^ state[92]; // x_69 ^ (x_76 & x_77) ^ x_93
+        for (int j = 92; j > 0; --j) {
+            state[j] = state[j - 1];
+        }
+        state[0] = new_a0;
+
+        // Shift and update B (bits 93-176)
+        bool new_b0 = state[93 + 69] ^ (state[93 + 76] & state[93 + 77]) ^ state[93 + 83]; // x_162 ^ (x_169 & x_170) ^ x_177
+        for (int j = 176; j > 93; --j) {
+            state[j] = state[j - 1];
+        }
+        state[93] = new_b0;
+
+        // Shift and update C (bits 177-287)
+        bool new_c0 = state[177 + 78] ^ (state[177 + 89] & state[177 + 90]) ^ state[177 + 110]; // x_255 ^ (x_266 & x_267) ^ x_288
+        for (int j = 287; j > 177; --j) {
+            state[j] = state[j - 1];
+        }
+        state[177] = new_c0;
+    }
+}
+
+// Function to generate one bit of keystream
+bool generate_keystream_bit(std::bitset<TRIVIUM_STATE_SIZE>& state) {
+    // Calculate t1, t2, t3
+    bool t1 = state[65] ^ state[92]; // A: x_66 ^ x_93
+    bool t2 = state[156] ^ state[176]; // B: x_157 ^ x_177
+    bool t3 = state[249] ^ state[287]; // C: x_250 ^ x_288
+
+    // Calculate the output bit z
+    bool z = t1 ^ t2 ^ t3;
+
+    // Update the state
+    // A: x_93 = x_69 ^ x_76 & x_77 ^ x_93
+    // B: x_177 = x_162 ^ x_169 & x_170 ^ x_177
+    // C: x_288 = x_255 ^ x_266 & x_267 ^ x_288
+
+    // Shift and update A (bits 0-92)
+    bool new_a0 = state[68] ^ (state[75] & state[76]) ^ state[92]; // x_69 ^ (x_76 & x_77) ^ x_93
+    for (int j = 92; j > 0; --j) {
+        state[j] = state[j - 1];
+    }
+    state[0] = new_a0;
+
+    // Shift and update B (bits 93-176)
+    bool new_b0 = state[93 + 69] ^ (state[93 + 76] & state[93 + 77]) ^ state[93 + 83]; // x_162 ^ (x_169 & x_170) ^ x_177
+    for (int j = 176; j > 93; --j) {
+        state[j] = state[j - 1];
+    }
+    state[93] = new_b0;
+
+    // Shift and update C (bits 177-287)
+    bool new_c0 = state[177 + 78] ^ (state[177 + 89] & state[177 + 90]) ^ state[177 + 110]; // x_255 ^ (x_266 & x_267) ^ x_288
+    for (int j = 287; j > 177; --j) {
+        state[j] = state[j - 1];
+    }
+    state[177] = new_c0;
+
+    return z;
+}
+
+// Function to encrypt/decrypt a message using Trivium
+// Since Trivium is a stream cipher, encryption and decryption are the same operation (XOR with keystream)
+std::vector<unsigned char> trivium_cipher(const std::vector<unsigned char>& message,
+                                          const std::bitset<KEY_SIZE>& key,
+                                          const std::bitset<IV_SIZE>& iv) {
+    std::bitset<TRIVIUM_STATE_SIZE> state;
+    initialize_trivium_state(state, key, iv);
+
+    std::vector<unsigned char> output_message = message; // Copy message to output buffer
+
+    for (size_t i = 0; i < message.size(); ++i) {
+        unsigned char current_byte = message[i];
+        unsigned char keystream_byte = 0;
+
+        // Generate 8 bits of keystream for the current byte
+        for (int bit_idx = 0; bit_idx < 8; ++bit_idx) {
+            bool keystream_bit = generate_keystream_bit(state);
+            if (keystream_bit) {
+                keystream_byte |= (1 << (7 - bit_idx)); // Build byte from MSB to LSB
+            }
+        }
+        output_message[i] = current_byte ^ keystream_byte;
+    }
+    return output_message;
+}
+
+// Helper function to convert a hex string to a bitset
+// Assumes hex_string represents the bits in MSB first order.
+// For example, "01" (hex) is 00000001 (binary).
+// Bitset stores LSB at index 0. So, for "01", bitset[0]=1, others 0.
+// We need to reverse the input bits to match bitset's internal representation.
+template<size_t N>
+std::bitset<N> hex_to_bitset(const std::string& hex_string) {
+    std::bitset<N> bs;
+    int bit_count = 0;
+    for (char hex_char : hex_string) {
+        int val;
+        if (hex_char >= '0' && hex_char <= '9') {
+            val = hex_char - '0';
+        } else if (hex_char >= 'a' && hex_char <= 'f') {
+            val = hex_char - 'a' + 10;
+        } else if (hex_char >= 'A' && hex_char <= 'F') {
+            val = hex_char - 'A' + 10;
+        } else {
+            // Handle invalid character
+            std::cerr << "Warning: Invalid hex character '" << hex_char << "' encountered." << std::endl;
+            continue;
+        }
+
+        // Convert 4 bits from hex value
+        for (int i = 3; i >= 0; --i) {
+            if (bit_count < N) {
+                bs[bit_count] = ((val >> i) & 1);
+                bit_count++;
+            } else {
+                break; // Exceeded bitset size
+            }
+        }
+    }
+    return bs;
+}
+
+// Helper function to convert a vector of unsigned chars to a hex string
+std::string bytes_to_hex(const std::vector<unsigned char>& bytes) {
+    std::string hex_str = "";
+    const char hex_chars[] = "0123456789abcdef";
+    for (unsigned char byte : bytes) {
+        hex_str += hex_chars[(byte >> 4) & 0xF];
+        hex_str += hex_chars[byte & 0xF];
+    }
+    return hex_str;
+}
+
+int main() {
+    // Example usage:
+    // Key and IV are 80 bits.
+    // For 80 bits, 20 hex characters (80 / 4 = 20)
+    std::string key_hex_str = "00000000000000000000"; // 80 bits (20 hex digits)
+    std::string iv_hex_str = "00000000000000000000";  // 80 bits (20 hex digits)
+
+    bitset<KEY_SIZE> key = hex_to_bitset<KEY_SIZE>(key_hex_str);
+    bitset<IV_SIZE> iv = hex_to_bitset<IV_SIZE>(iv_hex_str);
+
+    // Example message (plaintext)
+    string plaintext_str = "Hello Trivium!";
+    vector<unsigned char> plaintext(plaintext_str.begin(), plaintext_str.end());
+
+    cout << "Original Plaintext: " << plaintext_str << endl;
+    cout << "Plaintext (hex): " << bytes_to_hex(plaintext) << endl;
+
+    // Encrypt the message
+    vector<unsigned char> ciphertext = trivium_cipher(plaintext, key, iv);
+    cout << "Ciphertext (hex): " << bytes_to_hex(ciphertext) << endl;
+
+    // Decrypt the message
+    vector<unsigned char> decrypted_text = trivium_cipher(ciphertext, key, iv);
+    string decrypted_str(decrypted_text.begin(), decrypted_text.end());
+    cout << "Decrypted Text: " << decrypted_str << endl;
+
+    // Test with a known example (from eSTREAM portfolio, Trivium test vectors)
+    // Key = 0...0 (80 bits)
+    // IV = 0...0 (80 bits)
+    // First 10 bytes of keystream should be:
+    // 0x90, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    // (Note: The eSTREAM test vector is often presented as bytes, but Trivium produces bits.
+    // The first 8 bits of keystream form the first byte, etc.)
+
+    cout << "\n--- Keystream Generation Test (First 10 bytes with all-zero Key/IV) ---" << endl;
+    bitset<KEY_SIZE> test_key; test_key.reset();
+    bitset<IV_SIZE> test_iv; test_iv.reset();
+
+    bitset<TRIVIUM_STATE_SIZE> test_state;
+    initialize_trivium_state(test_state, test_key, test_iv);
+
+    vector<unsigned char> generated_keystream_bytes;
+    for (int i = 0; i < 10; ++i) { // Generate 10 bytes
+        unsigned char ks_byte = 0;
+        for (int bit_idx = 0; bit_idx < 8; ++bit_idx) {
+            bool ks_bit = generate_keystream_bit(test_state);
+            if (ks_bit) {
+                ks_byte |= (1 << (7 - bit_idx)); // Build byte from MSB to LSB
+            }
+        }
+        generated_keystream_bytes.push_back(ks_byte);
+    }
+    cout << "Generated Keystream (hex, first 10 bytes): " << bytes_to_hex(generated_keystream_bytes) << endl;
+    cout << "Expected Keystream (hex, first 10 bytes): 90000000000000000000" << endl;
+
+
+    return 0;
+}
