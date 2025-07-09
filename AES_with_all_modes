@@ -1,10 +1,12 @@
 #include <iostream>
 #include <vector>
-#include <string>
 #include <iomanip>
-#include <cstdint>
+#include <string>
 #include <sstream>
+#include <utility>
+#include <cstdint>
 #include <algorithm>
+
 using namespace std;
 
 const uint8_t sbox[256] = {
@@ -82,35 +84,35 @@ const uint8_t Rcon[11] = {
     0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
 };
 
-// ... Continue to Part 2 for AES helpers, core, key expansion ...
-
-// Multiply by 2 in GF(2^8)
+// Multiply by x (i.e., {02}) in GF(2^8)
 uint8_t xtime(uint8_t x) {
-    return (x << 1) ^ (((x >> 7) & 1) * 0x1b);
+    return (x << 1) ^ ((x & 0x80) ? 0x1b : 0x00);
 }
 
-// MixColumns helper
-uint8_t mul(uint8_t x, uint8_t y) {
-    uint8_t r = 0;
-    while (y) {
-        if (y & 1) r ^= x;
-        x = xtime(x);
-        y >>= 1;
+// General multiplication in GF(2^8)
+uint8_t mul(uint8_t a, uint8_t b) {
+    uint8_t result = 0;
+    while (b) {
+        if (b & 1) result ^= a;
+        a = xtime(a);
+        b >>= 1;
     }
-    return r;
+    return result;
 }
 
-// SubBytes step
+// SubBytes step — substitute each byte using the S-box
 void sub_bytes(vector<uint8_t>& state) {
-    for (auto& b : state) b = sbox[b];
+    for (auto& byte : state)
+        byte = sbox[byte];
 }
 
-// InvSubBytes step
+// InvSubBytes step — substitute each byte using the inverse S-box
 void inv_sub_bytes(vector<uint8_t>& state) {
-    for (auto& b : state) b = rsbox[b];
+    for (auto& byte : state)
+        byte = rsbox[byte];
 }
 
-// ShiftRows step
+// ShiftRows step — cyclically shift each row of the state
 void shift_rows(vector<uint8_t>& state) {
     vector<uint8_t> tmp = state;
     for (int r = 0; r < 4; r++)
@@ -118,7 +120,7 @@ void shift_rows(vector<uint8_t>& state) {
             state[r + 4 * c] = tmp[r + 4 * ((c + r) % 4)];
 }
 
-// Inverse ShiftRows step
+// InvShiftRows step — reverse cyclic shift of each row
 void inv_shift_rows(vector<uint8_t>& state) {
     vector<uint8_t> tmp = state;
     for (int r = 0; r < 4; r++)
@@ -126,51 +128,64 @@ void inv_shift_rows(vector<uint8_t>& state) {
             state[r + 4 * c] = tmp[r + 4 * ((c - r + 4) % 4)];
 }
 
-// MixColumns step
+// MixColumns step — mix each column using fixed matrix multiplication
 void mix_columns(vector<uint8_t>& state) {
-    for (int c = 0; c < 4; c++) {
+    for (int c = 0; c < 4; ++c) {
         int i = 4 * c;
-        uint8_t a = state[i], b = state[i+1], c_ = state[i+2], d = state[i+3];
-        state[i]   = mul(2,a) ^ mul(3,b) ^ c_ ^ d;
-        state[i+1] = a ^ mul(2,b) ^ mul(3,c_) ^ d;
-        state[i+2] = a ^ b ^ mul(2,c_) ^ mul(3,d);
-        state[i+3] = mul(3,a) ^ b ^ c_ ^ mul(2,d);
+        uint8_t a = state[i];
+        uint8_t b = state[i + 1];
+        uint8_t c_ = state[i + 2];
+        uint8_t d = state[i + 3];
+
+        state[i]     = mul(2, a) ^ mul(3, b) ^ c_ ^ d;
+        state[i + 1] = a ^ mul(2, b) ^ mul(3, c_) ^ d;
+        state[i + 2] = a ^ b ^ mul(2, c_) ^ mul(3, d);
+        state[i + 3] = mul(3, a) ^ b ^ c_ ^ mul(2, d);
     }
 }
 
-// InvMixColumns
+// InvMixColumns step — inverse column mixing
 void inv_mix_columns(vector<uint8_t>& state) {
-    for (int c = 0; c < 4; c++) {
+    for (int c = 0; c < 4; ++c) {
         int i = 4 * c;
-        uint8_t a = state[i], b = state[i+1], c_ = state[i+2], d = state[i+3];
-        state[i]   = mul(0x0e,a) ^ mul(0x0b,b) ^ mul(0x0d,c_) ^ mul(0x09,d);
-        state[i+1] = mul(0x09,a) ^ mul(0x0e,b) ^ mul(0x0b,c_) ^ mul(0x0d,d);
-        state[i+2] = mul(0x0d,a) ^ mul(0x09,b) ^ mul(0x0e,c_) ^ mul(0x0b,d);
-        state[i+3] = mul(0x0b,a) ^ mul(0x0d,b) ^ mul(0x09,c_) ^ mul(0x0e,d);
+        uint8_t a = state[i];
+        uint8_t b = state[i + 1];
+        uint8_t c_ = state[i + 2];
+        uint8_t d = state[i + 3];
+
+        state[i]     = mul(0x0e, a) ^ mul(0x0b, b) ^ mul(0x0d, c_) ^ mul(0x09, d);
+        state[i + 1] = mul(0x09, a) ^ mul(0x0e, b) ^ mul(0x0b, c_) ^ mul(0x0d, d);
+        state[i + 2] = mul(0x0d, a) ^ mul(0x09, b) ^ mul(0x0e, c_) ^ mul(0x0b, d);
+        state[i + 3] = mul(0x0b, a) ^ mul(0x0d, b) ^ mul(0x09, c_) ^ mul(0x0e, d);
     }
 }
 
-// AddRoundKey
+// AddRoundKey step — XOR the state with the round key
 void add_round_key(vector<uint8_t>& state, const vector<uint8_t>& roundKey) {
-    for (int i = 0; i < 16; i++) state[i] ^= roundKey[i];
+    for (int i = 0; i < 16; i++)
+        state[i] ^= roundKey[i];
 }
 
-// Key expansion (Nk = key length / 4, Nr = Nk + 6)
+// Expand the key into round keys
 vector<vector<uint8_t>> key_expansion(const vector<uint8_t>& key) {
-    int Nk = key.size() / 4;
-    int Nr = Nk + 6;
-    int Nb = 4;
+    int Nk = key.size() / 4;             // Key length in 32-bit words
+    int Nr = Nk + 6;                     // Number of AES rounds
+    int Nb = 4;                          // Block size in words
     vector<vector<uint8_t>> w(Nb * (Nr + 1), vector<uint8_t>(4));
+
+    // Copy the original key into the first Nk words
     for (int i = 0; i < Nk; i++)
         for (int j = 0; j < 4; j++)
-            w[i][j] = key[4*i + j];
+            w[i][j] = key[4 * i + j];
 
+    // Generate the rest of the key schedule
     for (int i = Nk; i < Nb * (Nr + 1); i++) {
         vector<uint8_t> temp = w[i - 1];
         if (i % Nk == 0) {
+            // Rotate, substitute using S-box, and XOR with Rcon
             rotate(temp.begin(), temp.begin() + 1, temp.end());
             for (auto& b : temp) b = sbox[b];
-            temp[0] ^= Rcon[i/Nk];
+            temp[0] ^= Rcon[i / Nk];
         } else if (Nk > 6 && i % Nk == 4) {
             for (auto& b : temp) b = sbox[b];
         }
@@ -178,15 +193,320 @@ vector<vector<uint8_t>> key_expansion(const vector<uint8_t>& key) {
             w[i][j] = w[i - Nk][j] ^ temp[j];
     }
 
-    // Flatten into round keys
+    // Flatten into round keys (16 bytes each)
     vector<vector<uint8_t>> roundKeys;
     for (int r = 0; r <= Nr; r++) {
         vector<uint8_t> roundKey;
         for (int c = 0; c < Nb; c++)
             for (int j = 0; j < 4; j++)
-                roundKey.push_back(w[r*Nb + c][j]);
+                roundKey.push_back(w[r * Nb + c][j]);
         roundKeys.push_back(roundKey);
     }
+
     return roundKeys;
 }
+
+vector<uint8_t> aes_encrypt_block(const vector<uint8_t>& input, const vector<vector<uint8_t>>& roundKeys, int rounds) {
+    vector<uint8_t> state = input;
+
+    // Initial AddRoundKey
+    add_round_key(state, roundKeys[0]);
+
+    // Main Rounds (Nr - 1)
+    for (int round = 1; round < rounds; round++) {
+        sub_bytes(state);
+        shift_rows(state);
+        mix_columns(state);
+        add_round_key(state, roundKeys[round]);
+    }
+
+    // Final Round (no MixColumns)
+    sub_bytes(state);
+    shift_rows(state);
+    add_round_key(state, roundKeys[rounds]);
+
+    return state;
+}
+
+vector<uint8_t> aes_decrypt_block(const vector<uint8_t>& input, const vector<vector<uint8_t>>& roundKeys, int rounds) {
+    vector<uint8_t> state = input;
+
+    // Initial AddRoundKey
+    add_round_key(state, roundKeys[rounds]);
+
+    // Main Rounds (Nr - 1)
+    for (int round = rounds - 1; round >= 1; round--) {
+        inv_shift_rows(state);
+        inv_sub_bytes(state);
+        add_round_key(state, roundKeys[round]);
+        inv_mix_columns(state);
+    }
+
+    // Final Round (no InvMixColumns)
+    inv_shift_rows(state);
+    inv_sub_bytes(state);
+    add_round_key(state, roundKeys[0]);
+
+    return state;
+}
+
+// Pads the input to a multiple of 16 bytes using PKCS#7
+vector<uint8_t> pad(const vector<uint8_t>& input) {
+    vector<uint8_t> padded = input;
+    size_t pad_len = 16 - (padded.size() % 16);
+    for (size_t i = 0; i < pad_len; i++)
+        padded.push_back((uint8_t)pad_len);
+    return padded;
+}
+
+// Removes PKCS#7 padding
+vector<uint8_t> unpad(const vector<uint8_t>& input) {
+    vector<uint8_t> output = input;
+    if (!output.empty()) {
+        uint8_t pad_len = output.back();
+        if (pad_len <= 16 && pad_len <= output.size())
+            output.resize(output.size() - pad_len);
+    }
+    return output;
+}
+
+vector<uint8_t> encrypt_ecb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, int rounds, bool debug = false) {
+    vector<uint8_t> padded = pad(input);
+    vector<uint8_t> output;
+
+    for (size_t i = 0; i < padded.size(); i += 16) {
+        vector<uint8_t> block(padded.begin() + i, padded.begin() + i + 16);
+        vector<uint8_t> encrypted_block = aes_encrypt_block(block, keys, rounds);
+        output.insert(output.end(), encrypted_block.begin(), encrypted_block.end());
+
+        if (debug) {
+            cout << "ECB Block " << i/16 << ": ";
+            for (uint8_t b : encrypted_block)
+                cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+    }
+
+    return output;
+}
+
+vector<uint8_t> decrypt_ecb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, int rounds) {
+    vector<uint8_t> output;
+
+    for (size_t i = 0; i < input.size(); i += 16) {
+        vector<uint8_t> block(input.begin() + i, input.begin() + i + 16);
+        vector<uint8_t> decrypted_block = aes_decrypt_block(block, keys, rounds);
+        output.insert(output.end(), decrypted_block.begin(), decrypted_block.end());
+    }
+
+    return unpad(output);
+}
+
+vector<uint8_t> encrypt_cbc(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, const vector<uint8_t>& iv, int rounds, bool debug = false) {
+    vector<uint8_t> padded = pad(input);
+    vector<uint8_t> output;
+    vector<uint8_t> prev = iv;
+
+    for (size_t i = 0; i < padded.size(); i += 16) {
+        vector<uint8_t> block(padded.begin() + i, padded.begin() + i + 16);
+        for (int j = 0; j < 16; j++)
+            block[j] ^= prev[j];
+
+        vector<uint8_t> encrypted_block = aes_encrypt_block(block, keys, rounds);
+        output.insert(output.end(), encrypted_block.begin(), encrypted_block.end());
+        prev = encrypted_block;
+
+        if (debug) {
+            cout << "CBC Block " << i/16 << ": ";
+            for (uint8_t b : encrypted_block)
+                cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+    }
+
+    return output;
+}
+
+vector<uint8_t> decrypt_cbc(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, const vector<uint8_t>& iv, int rounds) {
+    vector<uint8_t> output;
+    vector<uint8_t> prev = iv;
+
+    for (size_t i = 0; i < input.size(); i += 16) {
+        vector<uint8_t> block(input.begin() + i, input.begin() + i + 16);
+        vector<uint8_t> decrypted_block = aes_decrypt_block(block, keys, rounds);
+
+        for (int j = 0; j < 16; j++)
+            decrypted_block[j] ^= prev[j];
+
+        output.insert(output.end(), decrypted_block.begin(), decrypted_block.end());
+        prev = block;
+    }
+
+    return unpad(output);
+}
+
+vector<uint8_t> encrypt_ofb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug = false) {
+    vector<uint8_t> output;
+
+    for (size_t i = 0; i < input.size(); i += 16) {
+        // Generate keystream from IV
+        vector<uint8_t> stream = aes_encrypt_block(iv, keys, rounds);
+
+        // XOR keystream with plaintext/ciphertext
+        vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
+        for (size_t j = 0; j < block.size(); j++)
+            block[j] ^= stream[j];
+
+        output.insert(output.end(), block.begin(), block.end());
+
+        // Update IV
+        iv = stream;
+
+        if (debug) {
+            cout << "OFB Block " << i/16 << ": ";
+            for (uint8_t b : block)
+                cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+    }
+
+    return output;
+}
+
+vector<uint8_t> encrypt_ctr(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> nonce, int rounds, bool debug = false) {
+    vector<uint8_t> output;
+
+    for (size_t i = 0; i < input.size(); i += 16) {
+        // Generate keystream block from nonce
+        vector<uint8_t> stream = aes_encrypt_block(nonce, keys, rounds);
+
+        // Extract current block from input
+        vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
+
+        // XOR with keystream
+        for (size_t j = 0; j < block.size(); j++)
+            block[j] ^= stream[j];
+
+        output.insert(output.end(), block.begin(), block.end());
+
+        // Increment nonce as counter
+        for (int j = 15; j >= 0; j--) {
+            if (++nonce[j]) break;
+        }
+
+        if (debug) {
+            cout << "CTR Block " << i / 16 << ": ";
+            for (uint8_t b : block)
+                cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+    }
+
+    return output;
+}
+
+pair<vector<uint8_t>, vector<uint8_t>> encrypt_gcm(
+    const vector<uint8_t>& input,
+    const vector<vector<uint8_t>>& keys,
+    vector<uint8_t> iv,
+    int rounds,
+    bool debug = false
+) {
+    // Encrypt using CTR mode
+    vector<uint8_t> ciphertext = encrypt_ctr(input, keys, iv, rounds, debug);
+
+    // Generate dummy 16-byte tag (fixed value for simplicity)
+    vector<uint8_t> tag(16, 0xAB);
+
+    if (debug) {
+        cout << "GCM Auth Tag: ";
+        for (uint8_t b : tag)
+            cout << hex << setw(2) << setfill('0') << (int)b;
+        cout << endl;
+    }
+
+    return {ciphertext, tag};
+}
+
+int main() {
+    string input;
+    cout << "Enter plaintext: ";
+    getline(cin, input);
+
+    cout << "Enter key (16/24/32 characters for AES-128/192/256): ";
+    string key_input;
+    getline(cin, key_input);
+
+    if (key_input.size() != 16 && key_input.size() != 24 && key_input.size() != 32) {
+        cerr << "Invalid key size. Must be 16, 24, or 32 characters." << endl;
+        return 1;
+    }
+
+    // Determine key size and AES rounds
+    int key_size = key_input.size();
+    int rounds = (key_size == 16) ? 10 : (key_size == 24) ? 12 : 14;
+
+    // Convert input and key to byte vectors
+    vector<uint8_t> key(key_input.begin(), key_input.end());
+    vector<uint8_t> data(input.begin(), input.end());
+    vector<vector<uint8_t>> round_keys = key_expansion(key);
+    vector<uint8_t> iv(16, 0x00); // Initialization vector (can be randomized)
+
+    // Enable debugging
+    cout << "Enable debug mode (y/n)? ";
+    char dbg;
+    cin >> dbg;
+    bool debug = (dbg == 'y' || dbg == 'Y');
+
+    // Modes to test
+    vector<string> modes = {"ECB", "CBC", "OFB", "CTR", "GCM"};
+
+    for (const string& mode : modes) {
+        cout << "\n=== Testing Mode: " << mode << " ===" << endl;
+
+        vector<uint8_t> encrypted, decrypted;
+        vector<uint8_t> gcm_tag;
+
+        if (mode == "ECB") {
+            encrypted = encrypt_ecb(data, round_keys, rounds, debug);
+            decrypted = decrypt_ecb(encrypted, round_keys, rounds);
+        } else if (mode == "CBC") {
+            encrypted = encrypt_cbc(data, round_keys, iv, rounds, debug);
+            decrypted = decrypt_cbc(encrypted, round_keys, iv, rounds);
+        } else if (mode == "OFB") {
+            encrypted = encrypt_ofb(data, round_keys, iv, rounds, debug);
+            decrypted = encrypt_ofb(encrypted, round_keys, iv, rounds); // symmetric
+        } else if (mode == "CTR") {
+            encrypted = encrypt_ctr(data, round_keys, iv, rounds, debug);
+            decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds); // symmetric
+        } else if (mode == "GCM") {
+            tie(encrypted, gcm_tag) = encrypt_gcm(data, round_keys, iv, rounds, debug);
+            decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds); // simplified GCM decryption
+        }
+
+        // Show encrypted data in hex
+        cout << "Encrypted (hex): ";
+        for (uint8_t b : encrypted)
+            cout << hex << setw(2) << setfill('0') << (int)b;
+        cout << endl;
+
+        // Show authentication tag if in GCM
+        if (mode == "GCM") {
+            cout << "Auth Tag (hex): ";
+            for (uint8_t b : gcm_tag)
+                cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+
+        // Show decrypted result
+        cout << "Decrypted (text): ";
+        for (uint8_t b : decrypted)
+            cout << (char)b;
+        cout << endl;
+    }
+
+    return 0;
+}
+
+
 
