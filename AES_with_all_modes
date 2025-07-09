@@ -428,6 +428,67 @@ pair<vector<uint8_t>, vector<uint8_t>> encrypt_gcm(
     return {ciphertext, tag};
 }
 
+vector<uint8_t> encrypt_cfb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug = false) {
+    vector<uint8_t> output;
+    for (size_t i = 0; i < input.size(); i += 16) {
+        // Encrypt the IV or previous ciphertext
+        vector<uint8_t> stream = aes_encrypt_block(iv, keys, rounds);
+
+        // Prepare plaintext block (may be partial)
+        vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
+
+        // XOR block with keystream
+        for (size_t j = 0; j < block.size(); j++)
+            block[j] ^= stream[j];
+
+        // Append ciphertext
+        output.insert(output.end(), block.begin(), block.end());
+
+        // Update IV for next block
+        iv = block;
+
+        // Debug info
+        if (debug) {
+            cout << "CFB Block " << i / 16 << ": ";
+            for (uint8_t b : block) cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+    }
+    return output;
+}
+
+vector<uint8_t> decrypt_cfb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug = false) {
+    vector<uint8_t> output;
+    for (size_t i = 0; i < input.size(); i += 16) {
+        // Encrypt IV or previous ciphertext
+        vector<uint8_t> stream = aes_encrypt_block(iv, keys, rounds);
+
+        // Get ciphertext block
+        vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
+        vector<uint8_t> plain(block.size());
+
+        // XOR with keystream to get plaintext
+        for (size_t j = 0; j < block.size(); j++)
+            plain[j] = block[j] ^ stream[j];
+
+        // Append plaintext
+        output.insert(output.end(), plain.begin(), plain.end());
+
+        // Update IV with ciphertext for next round
+        iv = block;
+
+        // Debug info
+        if (debug) {
+            cout << "CFB Block " << i / 16 << ": ";
+            for (uint8_t b : plain) cout << hex << setw(2) << setfill('0') << (int)b;
+            cout << endl;
+        }
+    }
+    return output;
+}
+
+
+
 int main() {
     string input;
     cout << "Enter plaintext: ";
@@ -459,7 +520,7 @@ int main() {
     bool debug = (dbg == 'y' || dbg == 'Y');
 
     // Modes to test
-    vector<string> modes = {"ECB", "CBC", "OFB", "CTR", "GCM"};
+    vector<string> modes = {"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"};
 
     for (const string& mode : modes) {
         cout << "\n=== Testing Mode: " << mode << " ===" << endl;
@@ -482,6 +543,9 @@ int main() {
         } else if (mode == "GCM") {
             tie(encrypted, gcm_tag) = encrypt_gcm(data, round_keys, iv, rounds, debug);
             decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds); // simplified GCM decryption
+        } else if (mode == "CFB") {
+    encrypted = encrypt_cfb(data, round_keys, iv, rounds, debug);
+    decrypted = decrypt_cfb(encrypted, round_keys, iv, rounds, debug);
         }
 
         // Show encrypted data in hex
