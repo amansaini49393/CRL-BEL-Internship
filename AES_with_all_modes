@@ -1,14 +1,16 @@
-#include <iostream>
-#include <vector>
-#include <iomanip>
-#include <string>
-#include <sstream>
-#include <utility>
-#include <cstdint>
-#include <algorithm>
+#include <iostream>     // For input/output operations (cin, cout)
+#include <vector>       // For dynamic array container (vector<uint8_t>)
+#include <iomanip>      // For formatting output (e.g., hex with setw)
+#include <string>       // For using std::string
+#include <sstream>      // For string stream manipulations (if used)
+#include <utility>      // For std::pair (used in GCM output)
+#include <cstdint>      // For fixed-width integer types (e.g., uint8_t)
+#include <algorithm>    // For algorithms like std::min, std::rotate
 
-using namespace std;
+using namespace std;    // Allows direct use of standard types (e.g., cout instead of std::cout)
 
+// AES substitution box used in SubBytes step.
+// It substitutes each byte with another fixed value for non-linearity.
 const uint8_t sbox[256] = {
   0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5,
   0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
@@ -79,64 +81,80 @@ const uint8_t rsbox[256] = {
   0xe1, 0x69, 0x14, 0x63, 0x55, 0x21, 0x0c, 0x7d
 };
 
+
+// Round constants used in AES key expansion (based on powers of 2 in GF(2^8)).
 const uint8_t Rcon[11] = {
     0x00, 0x01, 0x02, 0x04, 0x08,
     0x10, 0x20, 0x40, 0x80, 0x1B, 0x36
 };
 
-// Multiply by x (i.e., {02}) in GF(2^8)
+// Multiply a number by {02} in GF(2^8) using xtime() trick.
+// If the highest bit is set (>= 128), shift left and XOR with 0x1b (AES's irreducible polynomial)
 uint8_t xtime(uint8_t x) {
     return (x << 1) ^ ((x & 0x80) ? 0x1b : 0x00);
 }
 
-// General multiplication in GF(2^8)
+// Multiply two bytes in GF(2^8) using Russian Peasant multiplication
+// Used in MixColumns and InvMixColumns.
 uint8_t mul(uint8_t a, uint8_t b) {
     uint8_t result = 0;
     while (b) {
-        if (b & 1) result ^= a;
-        a = xtime(a);
-        b >>= 1;
+        if (b & 1) result ^= a; // Add 'a' to result if the LSB of 'b' is set
+        a = xtime(a);           // Multiply 'a' by {02}
+        b >>= 1;                // Shift 'b' right (divide by 2)
     }
     return result;
 }
 
-// SubBytes step — substitute each byte using the S-box
+// Applies the SubBytes transformation to the AES state.
+// Replaces each byte with a value from the S-box to introduce non-linearity.
 void sub_bytes(vector<uint8_t>& state) {
     for (auto& byte : state)
-        byte = sbox[byte];
+        byte = sbox[byte];  // Replace each byte with corresponding S-box value
 }
 
-// InvSubBytes step — substitute each byte using the inverse S-box
+// Applies the inverse of SubBytes (used during decryption).
+// Replaces each byte with the corresponding inverse S-box value.
 void inv_sub_bytes(vector<uint8_t>& state) {
     for (auto& byte : state)
-        byte = rsbox[byte];
+        byte = rsbox[byte];  // Replace each byte with the inverse S-box value
 }
 
-// ShiftRows step — cyclically shift each row of the state
+// Performs the ShiftRows transformation.
+// Each row is cyclically shifted to the left by its row index (0,1,2,3).
 void shift_rows(vector<uint8_t>& state) {
-    vector<uint8_t> tmp = state;
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++)
+    vector<uint8_t> tmp = state; // Create a copy to hold original values
+
+    for (int r = 0; r < 4; r++)           // For each row
+        for (int c = 0; c < 4; c++)       // For each column
             state[r + 4 * c] = tmp[r + 4 * ((c + r) % 4)];
+            // Compute the new column index by shifting 'r' positions to the left
 }
 
-// InvShiftRows step — reverse cyclic shift of each row
+// Performs the inverse ShiftRows transformation.
+// Each row is cyclically shifted to the right by its row index.
 void inv_shift_rows(vector<uint8_t>& state) {
     vector<uint8_t> tmp = state;
+
     for (int r = 0; r < 4; r++)
         for (int c = 0; c < 4; c++)
             state[r + 4 * c] = tmp[r + 4 * ((c - r + 4) % 4)];
+            // Add 4 before modulo to ensure non-negative index
 }
 
-// MixColumns step — mix each column using fixed matrix multiplication
+// Performs MixColumns transformation on each column of the state.
+// Each column is multiplied with a fixed matrix in GF(2^8).
 void mix_columns(vector<uint8_t>& state) {
     for (int c = 0; c < 4; ++c) {
-        int i = 4 * c;
+        int i = 4 * c; // Index of first byte in column
+
+        // Load column values into temporary variables
         uint8_t a = state[i];
         uint8_t b = state[i + 1];
         uint8_t c_ = state[i + 2];
         uint8_t d = state[i + 3];
 
+        // Apply matrix multiplication using GF(2^8) rules
         state[i]     = mul(2, a) ^ mul(3, b) ^ c_ ^ d;
         state[i + 1] = a ^ mul(2, b) ^ mul(3, c_) ^ d;
         state[i + 2] = a ^ b ^ mul(2, c_) ^ mul(3, d);
@@ -144,15 +162,18 @@ void mix_columns(vector<uint8_t>& state) {
     }
 }
 
-// InvMixColumns step — inverse column mixing
+// Performs the inverse MixColumns transformation.
+// Reverses the mixing using inverse matrix multiplication in GF(2^8).
 void inv_mix_columns(vector<uint8_t>& state) {
     for (int c = 0; c < 4; ++c) {
         int i = 4 * c;
+
         uint8_t a = state[i];
         uint8_t b = state[i + 1];
         uint8_t c_ = state[i + 2];
         uint8_t d = state[i + 3];
 
+        // Multiply by inverse matrix coefficients
         state[i]     = mul(0x0e, a) ^ mul(0x0b, b) ^ mul(0x0d, c_) ^ mul(0x09, d);
         state[i + 1] = mul(0x09, a) ^ mul(0x0e, b) ^ mul(0x0b, c_) ^ mul(0x0d, d);
         state[i + 2] = mul(0x0d, a) ^ mul(0x09, b) ^ mul(0x0e, c_) ^ mul(0x0b, d);
@@ -160,127 +181,171 @@ void inv_mix_columns(vector<uint8_t>& state) {
     }
 }
 
-// AddRoundKey step — XOR the state with the round key
+// XORs the current state with the round key.
+// This is the only step that introduces the key into AES rounds.
 void add_round_key(vector<uint8_t>& state, const vector<uint8_t>& roundKey) {
     for (int i = 0; i < 16; i++)
-        state[i] ^= roundKey[i];
+        state[i] ^= roundKey[i]; // Bitwise XOR of state byte with key byte
 }
 
-// Expand the key into round keys
+// Expands the input cipher key into round keys used for each round of AES.
+// Input:
+//   key - original cipher key (128, 192, or 256 bits)
+// Output:
+//   A vector of 16-byte round keys (one for each AES round + initial key)
 vector<vector<uint8_t>> key_expansion(const vector<uint8_t>& key) {
-    int Nk = key.size() / 4;             // Key length in 32-bit words
-    int Nr = Nk + 6;                     // Number of AES rounds
-    int Nb = 4;                          // Block size in words
+    int Nk = key.size() / 4;             // Nk: Number of 32-bit words in key
+    int Nr = Nk + 6;                     // Nr: Number of rounds
+    int Nb = 4;                          // Nb: Number of columns (always 4 for AES)
+
+    // w[i] represents the i-th 4-byte word of the key schedule
     vector<vector<uint8_t>> w(Nb * (Nr + 1), vector<uint8_t>(4));
 
-    // Copy the original key into the first Nk words
-    for (int i = 0; i < Nk; i++)
-        for (int j = 0; j < 4; j++)
-            w[i][j] = key[4 * i + j];
-
-    // Generate the rest of the key schedule
-    for (int i = Nk; i < Nb * (Nr + 1); i++) {
-        vector<uint8_t> temp = w[i - 1];
-        if (i % Nk == 0) {
-            // Rotate, substitute using S-box, and XOR with Rcon
-            rotate(temp.begin(), temp.begin() + 1, temp.end());
-            for (auto& b : temp) b = sbox[b];
-            temp[0] ^= Rcon[i / Nk];
-        } else if (Nk > 6 && i % Nk == 4) {
-            for (auto& b : temp) b = sbox[b];
+    // Step 1: Copy the original key into the first Nk words
+    for (int i = 0; i < Nk; i++) {
+        for (int j = 0; j < 4; j++) {
+            w[i][j] = key[4 * i + j];  // Each word has 4 bytes
         }
+    }
+
+    // Step 2: Generate the remaining round key words
+    for (int i = Nk; i < Nb * (Nr + 1); i++) {
+        vector<uint8_t> temp = w[i - 1]; // Previous word
+
+        // Perform key schedule core every Nk words
+        if (i % Nk == 0) {
+            // Rotate the word left by 1 byte: RotWord()
+            rotate(temp.begin(), temp.begin() + 1, temp.end());
+
+            // Apply S-box to all bytes of the word: SubWord()
+            for (auto& b : temp)
+                b = sbox[b];
+
+            // XOR the first byte with Rcon[i/Nk]
+            temp[0] ^= Rcon[i / Nk];
+        }
+        // Additional transformation for AES-256
+        else if (Nk > 6 && i % Nk == 4) {
+            for (auto& b : temp)
+                b = sbox[b];  // Only apply SubWord()
+        }
+
+        // XOR with word Nk positions earlier
         for (int j = 0; j < 4; j++)
             w[i][j] = w[i - Nk][j] ^ temp[j];
     }
 
-    // Flatten into round keys (16 bytes each)
+    // Step 3: Flatten the round keys into 16-byte blocks
     vector<vector<uint8_t>> roundKeys;
     for (int r = 0; r <= Nr; r++) {
         vector<uint8_t> roundKey;
-        for (int c = 0; c < Nb; c++)
-            for (int j = 0; j < 4; j++)
+        for (int c = 0; c < Nb; c++) {
+            for (int j = 0; j < 4; j++) {
                 roundKey.push_back(w[r * Nb + c][j]);
-        roundKeys.push_back(roundKey);
+            }
+        }
+        roundKeys.push_back(roundKey); // One 16-byte round key
     }
 
     return roundKeys;
 }
 
+// Encrypts a single 16-byte block using AES.
+// Inputs:
+//   - input: 16-byte plaintext block
+//   - roundKeys: all round keys (from key expansion)
+//   - rounds: number of AES rounds (10, 12, or 14)
+// Output:
+//   - Encrypted 16-byte ciphertext block
 vector<uint8_t> aes_encrypt_block(const vector<uint8_t>& input, const vector<vector<uint8_t>>& roundKeys, int rounds) {
-    vector<uint8_t> state = input;
+    vector<uint8_t> state = input;  // Copy plaintext block into state
 
-    // Initial AddRoundKey
+    // Step 1: Initial AddRoundKey (before any round)
     add_round_key(state, roundKeys[0]);
 
-    // Main Rounds (Nr - 1)
+    // Step 2: Main Rounds (Nr - 1)
     for (int round = 1; round < rounds; round++) {
-        sub_bytes(state);
-        shift_rows(state);
-        mix_columns(state);
-        add_round_key(state, roundKeys[round]);
+        sub_bytes(state);                    // SubBytes: substitute each byte via S-box
+        shift_rows(state);                   // ShiftRows: cyclically shift each row
+        mix_columns(state);                  // MixColumns: column mixing with matrix multiplication
+        add_round_key(state, roundKeys[round]); // AddRoundKey: XOR state with current round key
     }
 
-    // Final Round (no MixColumns)
+    // Step 3: Final Round (without MixColumns)
     sub_bytes(state);
     shift_rows(state);
     add_round_key(state, roundKeys[rounds]);
 
-    return state;
+    return state;  // Return the final encrypted block
 }
 
+// Decrypts a single 16-byte block using AES.
+// Inputs:
+//   - input: 16-byte ciphertext block
+//   - roundKeys: all round keys
+//   - rounds: number of AES rounds
+// Output:
+//   - Decrypted 16-byte plaintext block
 vector<uint8_t> aes_decrypt_block(const vector<uint8_t>& input, const vector<vector<uint8_t>>& roundKeys, int rounds) {
-    vector<uint8_t> state = input;
+    vector<uint8_t> state = input;  // Copy ciphertext block into state
 
-    // Initial AddRoundKey
+    // Step 1: Initial AddRoundKey with last round key
     add_round_key(state, roundKeys[rounds]);
 
-    // Main Rounds (Nr - 1)
+    // Step 2: Main Rounds (Nr - 1)
     for (int round = rounds - 1; round >= 1; round--) {
-        inv_shift_rows(state);
-        inv_sub_bytes(state);
-        add_round_key(state, roundKeys[round]);
-        inv_mix_columns(state);
+        inv_shift_rows(state);                  // InvShiftRows: reverse row shift
+        inv_sub_bytes(state);                   // InvSubBytes: reverse substitution via rsbox
+        add_round_key(state, roundKeys[round]); // AddRoundKey
+        inv_mix_columns(state);                 // InvMixColumns: reverse mixing of columns
     }
 
-    // Final Round (no InvMixColumns)
+    // Step 3: Final Round (no InvMixColumns)
     inv_shift_rows(state);
     inv_sub_bytes(state);
     add_round_key(state, roundKeys[0]);
 
-    return state;
+    return state;  // Return the final decrypted block
 }
 
-// Pads the input to a multiple of 16 bytes using PKCS#7
+// Pads input using PKCS#7 padding to make its size a multiple of 16 bytes
+// Input: raw byte vector (not necessarily a multiple of 16 bytes)
+// Output: padded vector with extra bytes added (each padding byte = padding length)
 vector<uint8_t> pad(const vector<uint8_t>& input) {
     vector<uint8_t> padded = input;
-    size_t pad_len = 16 - (padded.size() % 16);
+    size_t pad_len = 16 - (padded.size() % 16); // How many bytes needed to reach next multiple of 16
     for (size_t i = 0; i < pad_len; i++)
-        padded.push_back((uint8_t)pad_len);
+        padded.push_back((uint8_t)pad_len);     // Append 'pad_len' number of bytes with value 'pad_len'
     return padded;
 }
 
-// Removes PKCS#7 padding
+// Removes PKCS#7 padding from the end of the data
+// Input: padded vector
+// Output: original unpadded vector
 vector<uint8_t> unpad(const vector<uint8_t>& input) {
     vector<uint8_t> output = input;
     if (!output.empty()) {
-        uint8_t pad_len = output.back();
-        if (pad_len <= 16 && pad_len <= output.size())
-            output.resize(output.size() - pad_len);
+        uint8_t pad_len = output.back();               // Last byte tells how many padding bytes there are
+        if (pad_len <= 16 && pad_len <= output.size()) // Sanity check: avoid underflow
+            output.resize(output.size() - pad_len);    // Remove padding bytes
     }
     return output;
 }
 
+// Encrypts data in ECB mode (each 16-byte block independently)
+// Input: padded plaintext, round keys, AES round count
+// Output: encrypted ciphertext
 vector<uint8_t> encrypt_ecb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, int rounds, bool debug = false) {
-    vector<uint8_t> padded = pad(input);
+    vector<uint8_t> padded = pad(input);  // Pad input to multiple of 16 bytes
     vector<uint8_t> output;
 
     for (size_t i = 0; i < padded.size(); i += 16) {
-        vector<uint8_t> block(padded.begin() + i, padded.begin() + i + 16);
-        vector<uint8_t> encrypted_block = aes_encrypt_block(block, keys, rounds);
-        output.insert(output.end(), encrypted_block.begin(), encrypted_block.end());
+        vector<uint8_t> block(padded.begin() + i, padded.begin() + i + 16);  // Get 16-byte block
+        vector<uint8_t> encrypted_block = aes_encrypt_block(block, keys, rounds);  // Encrypt block
+        output.insert(output.end(), encrypted_block.begin(), encrypted_block.end()); // Append to output
 
         if (debug) {
-            cout << "ECB Block " << i/16 << ": ";
+            cout << "ECB Block " << i / 16 << ": ";
             for (uint8_t b : encrypted_block)
                 cout << hex << setw(2) << setfill('0') << (int)b;
             cout << endl;
@@ -290,34 +355,44 @@ vector<uint8_t> encrypt_ecb(const vector<uint8_t>& input, const vector<vector<ui
     return output;
 }
 
+// Decrypts data in ECB mode
+// Input: encrypted ciphertext, round keys, AES round count
+// Output: decrypted and unpadded plaintext
 vector<uint8_t> decrypt_ecb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, int rounds) {
     vector<uint8_t> output;
 
     for (size_t i = 0; i < input.size(); i += 16) {
-        vector<uint8_t> block(input.begin() + i, input.begin() + i + 16);
-        vector<uint8_t> decrypted_block = aes_decrypt_block(block, keys, rounds);
+        vector<uint8_t> block(input.begin() + i, input.begin() + i + 16);  // Extract block
+        vector<uint8_t> decrypted_block = aes_decrypt_block(block, keys, rounds); // Decrypt
         output.insert(output.end(), decrypted_block.begin(), decrypted_block.end());
     }
 
-    return unpad(output);
+    return unpad(output);  // Remove padding
 }
 
-vector<uint8_t> encrypt_cbc(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, const vector<uint8_t>& iv, int rounds, bool debug = false) {
-    vector<uint8_t> padded = pad(input);
+// Encrypts data in CBC (Cipher Block Chaining) mode
+// Each block is XORed with previous ciphertext block (or IV) before encryption
+vector<uint8_t> encrypt_cbc(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, const vector<uint8_t>& iv, int rounds, bool debug) {
+    vector<uint8_t> padded = pad(input); // Pad input
     vector<uint8_t> output;
-    vector<uint8_t> prev = iv;
+    vector<uint8_t> prev = iv;           // Previous ciphertext block (starts with IV)
 
     for (size_t i = 0; i < padded.size(); i += 16) {
+        // Get 16-byte block
         vector<uint8_t> block(padded.begin() + i, padded.begin() + i + 16);
+
+        // XOR with previous ciphertext (or IV)
         for (int j = 0; j < 16; j++)
             block[j] ^= prev[j];
 
+        // Encrypt block and save result
         vector<uint8_t> encrypted_block = aes_encrypt_block(block, keys, rounds);
         output.insert(output.end(), encrypted_block.begin(), encrypted_block.end());
-        prev = encrypted_block;
+
+        prev = encrypted_block; // Update prev block
 
         if (debug) {
-            cout << "CBC Block " << i/16 << ": ";
+            cout << "CBC Block " << i / 16 << ": ";
             for (uint8_t b : encrypted_block)
                 cout << hex << setw(2) << setfill('0') << (int)b;
             cout << endl;
@@ -327,43 +402,53 @@ vector<uint8_t> encrypt_cbc(const vector<uint8_t>& input, const vector<vector<ui
     return output;
 }
 
+// Decrypts data in CBC mode
+// Each decrypted block is XORed with previous ciphertext block (or IV) to retrieve plaintext
 vector<uint8_t> decrypt_cbc(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, const vector<uint8_t>& iv, int rounds) {
     vector<uint8_t> output;
     vector<uint8_t> prev = iv;
 
     for (size_t i = 0; i < input.size(); i += 16) {
+        // Get 16-byte ciphertext block
         vector<uint8_t> block(input.begin() + i, input.begin() + i + 16);
+
+        // Decrypt it
         vector<uint8_t> decrypted_block = aes_decrypt_block(block, keys, rounds);
 
+        // XOR with previous ciphertext or IV
         for (int j = 0; j < 16; j++)
             decrypted_block[j] ^= prev[j];
 
         output.insert(output.end(), decrypted_block.begin(), decrypted_block.end());
-        prev = block;
+
+        prev = block; // Set current ciphertext as next IV
     }
 
     return unpad(output);
 }
 
-vector<uint8_t> encrypt_ofb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug = false) {
+// Encrypts using OFB (Output Feedback) mode
+// Encrypts IV repeatedly to generate keystream, XORed with plaintext
+vector<uint8_t> encrypt_ofb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug) {
     vector<uint8_t> output;
 
     for (size_t i = 0; i < input.size(); i += 16) {
-        // Generate keystream from IV
+        // Encrypt current IV to get keystream block
         vector<uint8_t> stream = aes_encrypt_block(iv, keys, rounds);
 
-        // XOR keystream with plaintext/ciphertext
+        // Extract input block (may be partial)
         vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
+
+        // XOR with keystream
         for (size_t j = 0; j < block.size(); j++)
             block[j] ^= stream[j];
 
         output.insert(output.end(), block.begin(), block.end());
 
-        // Update IV
-        iv = stream;
+        iv = stream; // Next IV is current keystream
 
         if (debug) {
-            cout << "OFB Block " << i/16 << ": ";
+            cout << "OFB Block " << i / 16 << ": ";
             for (uint8_t b : block)
                 cout << hex << setw(2) << setfill('0') << (int)b;
             cout << endl;
@@ -373,14 +458,16 @@ vector<uint8_t> encrypt_ofb(const vector<uint8_t>& input, const vector<vector<ui
     return output;
 }
 
-vector<uint8_t> encrypt_ctr(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> nonce, int rounds, bool debug = false) {
+// Encrypts using CTR (Counter) mode
+// Nonce/counter is encrypted to generate keystream for XOR with input
+vector<uint8_t> encrypt_ctr(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> nonce, int rounds, bool debug) {
     vector<uint8_t> output;
 
     for (size_t i = 0; i < input.size(); i += 16) {
-        // Generate keystream block from nonce
+        // Encrypt counter to get keystream
         vector<uint8_t> stream = aes_encrypt_block(nonce, keys, rounds);
 
-        // Extract current block from input
+        // Get current input block
         vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
 
         // XOR with keystream
@@ -389,7 +476,7 @@ vector<uint8_t> encrypt_ctr(const vector<uint8_t>& input, const vector<vector<ui
 
         output.insert(output.end(), block.begin(), block.end());
 
-        // Increment nonce as counter
+        // Increment counter (little endian style)
         for (int j = 15; j >= 0; j--) {
             if (++nonce[j]) break;
         }
@@ -405,18 +492,20 @@ vector<uint8_t> encrypt_ctr(const vector<uint8_t>& input, const vector<vector<ui
     return output;
 }
 
+// Encrypts input using AES-GCM (Galois/Counter Mode)
+// Note: This is a simplified version without actual GHASH authentication
 pair<vector<uint8_t>, vector<uint8_t>> encrypt_gcm(
     const vector<uint8_t>& input,
     const vector<vector<uint8_t>>& keys,
     vector<uint8_t> iv,
     int rounds,
-    bool debug = false
+    bool debug
 ) {
-    // Encrypt using CTR mode
+    // Encrypt plaintext using CTR mode (GCM uses CTR internally)
     vector<uint8_t> ciphertext = encrypt_ctr(input, keys, iv, rounds, debug);
 
-    // Generate dummy 16-byte tag (fixed value for simplicity)
-    vector<uint8_t> tag(16, 0xAB);
+    // Generate a dummy authentication tag (fixed value for simplicity)
+    vector<uint8_t> tag(16, 0xAB); // Real GCM would compute GHASH here
 
     if (debug) {
         cout << "GCM Auth Tag: ";
@@ -425,42 +514,49 @@ pair<vector<uint8_t>, vector<uint8_t>> encrypt_gcm(
         cout << endl;
     }
 
+    // Return both ciphertext and tag
     return {ciphertext, tag};
 }
 
-vector<uint8_t> encrypt_cfb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug = false) {
+// Encrypts data using CFB (Cipher Feedback) mode
+// Each block is XORed with encrypted IV (or previous ciphertext)
+vector<uint8_t> encrypt_cfb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug) {
     vector<uint8_t> output;
+
     for (size_t i = 0; i < input.size(); i += 16) {
-        // Encrypt the IV or previous ciphertext
+        // Encrypt the current IV or previous ciphertext to get keystream
         vector<uint8_t> stream = aes_encrypt_block(iv, keys, rounds);
 
-        // Prepare plaintext block (may be partial)
+        // Get current plaintext block
         vector<uint8_t> block(input.begin() + i, input.begin() + min(i + 16, input.size()));
 
-        // XOR block with keystream
+        // XOR with keystream to get ciphertext
         for (size_t j = 0; j < block.size(); j++)
             block[j] ^= stream[j];
 
-        // Append ciphertext
         output.insert(output.end(), block.begin(), block.end());
 
-        // Update IV for next block
+        // Next IV is current ciphertext block
         iv = block;
 
-        // Debug info
         if (debug) {
             cout << "CFB Block " << i / 16 << ": ";
-            for (uint8_t b : block) cout << hex << setw(2) << setfill('0') << (int)b;
+            for (uint8_t b : block)
+                cout << hex << setw(2) << setfill('0') << (int)b;
             cout << endl;
         }
     }
+
     return output;
 }
 
-vector<uint8_t> decrypt_cfb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug = false) {
+// Decrypts data using CFB mode
+// Each block is XORed with encrypted IV (or previous ciphertext) to recover plaintext
+vector<uint8_t> decrypt_cfb(const vector<uint8_t>& input, const vector<vector<uint8_t>>& keys, vector<uint8_t> iv, int rounds, bool debug) {
     vector<uint8_t> output;
+
     for (size_t i = 0; i < input.size(); i += 16) {
-        // Encrypt IV or previous ciphertext
+        // Encrypt the current IV or previous ciphertext
         vector<uint8_t> stream = aes_encrypt_block(iv, keys, rounds);
 
         // Get ciphertext block
@@ -471,63 +567,72 @@ vector<uint8_t> decrypt_cfb(const vector<uint8_t>& input, const vector<vector<ui
         for (size_t j = 0; j < block.size(); j++)
             plain[j] = block[j] ^ stream[j];
 
-        // Append plaintext
         output.insert(output.end(), plain.begin(), plain.end());
 
-        // Update IV with ciphertext for next round
+        // Set IV to current ciphertext block for next iteration
         iv = block;
 
-        // Debug info
         if (debug) {
             cout << "CFB Block " << i / 16 << ": ";
-            for (uint8_t b : plain) cout << hex << setw(2) << setfill('0') << (int)b;
+            for (uint8_t b : plain)
+                cout << hex << setw(2) << setfill('0') << (int)b;
             cout << endl;
         }
     }
+
     return output;
 }
-
-
 
 int main() {
     string input;
     cout << "Enter plaintext: ";
-    getline(cin, input);
+    getline(cin, input);  // Read the input message from user (can include spaces)
 
     cout << "Enter key (16/24/32 characters for AES-128/192/256): ";
+    /*16 characters → for AES-128 (128-bit key)
+	24 characters → for AES-192 (192-bit key)
+	32 characters → for AES-256 (256-bit key)*/
+	
     string key_input;
-    getline(cin, key_input);
+    getline(cin, key_input);  // Read the secret key from the user
 
+    // Validate key length: must be 16, 24, or 32 bytes (AES-128/192/256)
     if (key_input.size() != 16 && key_input.size() != 24 && key_input.size() != 32) {
         cerr << "Invalid key size. Must be 16, 24, or 32 characters." << endl;
-        return 1;
+        return 1;  // Exit with error if key size is invalid
     }
 
-    // Determine key size and AES rounds
+    // Determine number of AES rounds based on key size
     int key_size = key_input.size();
     int rounds = (key_size == 16) ? 10 : (key_size == 24) ? 12 : 14;
 
-    // Convert input and key to byte vectors
+    // Convert plaintext and key from strings to vectors of bytes
     vector<uint8_t> key(key_input.begin(), key_input.end());
     vector<uint8_t> data(input.begin(), input.end());
-    vector<vector<uint8_t>> round_keys = key_expansion(key);
-    vector<uint8_t> iv(16, 0x00); // Initialization vector (can be randomized)
 
-    // Enable debugging
+    // Perform AES key expansion to generate all round keys
+    vector<vector<uint8_t>> round_keys = key_expansion(key);
+
+    // Define a 16-byte IV (Initialization Vector) filled with 0x00 for modes like CBC, OFB, etc.
+    vector<uint8_t> iv(16, 0x00);
+
+    // Ask user whether to enable debug mode (prints intermediate steps)
     cout << "Enable debug mode (y/n)? ";
     char dbg;
     cin >> dbg;
     bool debug = (dbg == 'y' || dbg == 'Y');
 
-    // Modes to test
+    // Define the modes of AES to test
     vector<string> modes = {"ECB", "CBC", "CFB", "OFB", "CTR", "GCM"};
 
+    // Loop over each mode for testing
     for (const string& mode : modes) {
         cout << "\n=== Testing Mode: " << mode << " ===" << endl;
 
         vector<uint8_t> encrypted, decrypted;
-        vector<uint8_t> gcm_tag;
+        vector<uint8_t> gcm_tag;  // For GCM mode, stores authentication tag
 
+        // Call corresponding encrypt/decrypt functions based on the mode
         if (mode == "ECB") {
             encrypted = encrypt_ecb(data, round_keys, rounds, debug);
             decrypted = decrypt_ecb(encrypted, round_keys, rounds);
@@ -536,25 +641,25 @@ int main() {
             decrypted = decrypt_cbc(encrypted, round_keys, iv, rounds);
         } else if (mode == "OFB") {
             encrypted = encrypt_ofb(data, round_keys, iv, rounds, debug);
-            decrypted = encrypt_ofb(encrypted, round_keys, iv, rounds); // symmetric
+            decrypted = encrypt_ofb(encrypted, round_keys, iv, rounds, debug);  // OFB is symmetric
         } else if (mode == "CTR") {
             encrypted = encrypt_ctr(data, round_keys, iv, rounds, debug);
-            decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds); // symmetric
+            decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds, debug);  // CTR is symmetric
         } else if (mode == "GCM") {
             tie(encrypted, gcm_tag) = encrypt_gcm(data, round_keys, iv, rounds, debug);
-            decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds); // simplified GCM decryption
+            decrypted = encrypt_ctr(encrypted, round_keys, iv, rounds, debug);  // simplified GCM decryption
         } else if (mode == "CFB") {
-    encrypted = encrypt_cfb(data, round_keys, iv, rounds, debug);
-    decrypted = decrypt_cfb(encrypted, round_keys, iv, rounds, debug);
+            encrypted = encrypt_cfb(data, round_keys, iv, rounds, debug);
+            decrypted = decrypt_cfb(encrypted, round_keys, iv, rounds, debug);
         }
 
-        // Show encrypted data in hex
+        // Display the encrypted output in hexadecimal format
         cout << "Encrypted (hex): ";
         for (uint8_t b : encrypted)
             cout << hex << setw(2) << setfill('0') << (int)b;
         cout << endl;
 
-        // Show authentication tag if in GCM
+        // If GCM, also display authentication tag
         if (mode == "GCM") {
             cout << "Auth Tag (hex): ";
             for (uint8_t b : gcm_tag)
@@ -562,15 +667,12 @@ int main() {
             cout << endl;
         }
 
-        // Show decrypted result
+        // Print the decrypted plaintext after decryption
         cout << "Decrypted (text): ";
         for (uint8_t b : decrypted)
             cout << (char)b;
         cout << endl;
     }
 
-    return 0;
+    return 0;  // Program ends successfully
 }
-
-
-
